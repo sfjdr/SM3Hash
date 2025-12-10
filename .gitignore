@@ -1,0 +1,17 @@
+# Build artifacts
+*.exe
+*.exe~
+*.test
+*.out
+
+# Go modules & build cache
+bin/
+pkg/
+.gocache/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+*.tmp
