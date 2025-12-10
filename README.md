@@ -16,6 +16,15 @@ go fmt ./...
 go build -o SM3Hash.exe sm3hash.go
 ```
 
+## 图标与版本资源
+- 源图标：`icon.png`（2048x2048），自动生成 `app.ico` 并写入可执行文件。
+- 更新图标/版本到 exe：
+```powershell
+go build -o SM3Hash.exe sm3hash.go
+$env:TEMP=\"$PWD\\tmp\"; $env:TMP=\"$PWD\\tmp\"; tools\\embedres.exe
+```
+- 版本号在工具内固定为 `1.0.0.0`，需要修改时可编辑 `tools/embedres/main.go` 中的 `buildVersionInfo` 调用。
+
 ## 使用
 - 直接运行 `SM3Hash.exe`，拖拽文件或点击“浏览”添加文件。
 - 勾选“Upper”可输出大写 SM3；“Size”“Time”控制附加信息。
