@@ -13,17 +13,17 @@ SM3 hash desktop工具，纯 Go + WinAPI 实现，单文件源码，无第三方
 # 在项目根目录
 go mod tidy    # 标准库依赖，快速完成
 go fmt ./...
-go build -o SM3Hash.exe sm3hash.go
+go build -ldflags "-H=windowsgui" -o SM3Hash.exe sm3hash.go
 ```
 
 ## 图标与版本资源
-- 源图标：`icon.png`（2048x2048），自动生成 `app.ico` 并写入可执行文件。
-- 更新图标/版本到 exe：
+- 源图标：`icon.png`（2048x2048），自动生成 `app.ico` 并写入可执行文件，同时嵌入 manifest（启用新版控件样式）。
+- 更新图标/版本/manifest 到 exe：
 ```powershell
 go build -o SM3Hash.exe sm3hash.go
 $env:TEMP=\"$PWD\\tmp\"; $env:TMP=\"$PWD\\tmp\"; tools\\embedres.exe
 ```
-- 版本号在工具内固定为 `1.0.0.0`，需要修改时可编辑 `tools/embedres/main.go` 中的 `buildVersionInfo` 调用。
+- 版本号固定为 `1.0.0.0`，需要修改时可编辑 `tools/embedres/main.go` 中的 `buildVersionInfo` 调用；UI 子系统已指定为 GUI（无控制台窗）。
 
 ## 使用
 - 直接运行 `SM3Hash.exe`，拖拽文件或点击“浏览”添加文件。

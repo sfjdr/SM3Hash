@@ -41,12 +41,14 @@ var (
 	procGetOpenFileNameW     = comdlg32.NewProc("GetOpenFileNameW")
 	procGetSaveFileNameW     = comdlg32.NewProc("GetSaveFileNameW")
 	procGetStockObject       = gdi32.NewProc("GetStockObject")
+	procCreateFontW          = gdi32.NewProc("CreateFontW")
 	procGetClientRect        = user32.NewProc("GetClientRect")
 	procMoveWindow           = user32.NewProc("MoveWindow")
 	procOpenClipboard        = user32.NewProc("OpenClipboard")
 	procCloseClipboard       = user32.NewProc("CloseClipboard")
 	procEmptyClipboard       = user32.NewProc("EmptyClipboard")
 	procSetClipboardData     = user32.NewProc("SetClipboardData")
+	procLoadImageW           = user32.NewProc("LoadImageW")
 	procGlobalAlloc          = kernel32.NewProc("GlobalAlloc")
 	procGlobalLock           = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock         = kernel32.NewProc("GlobalUnlock")
@@ -105,11 +107,21 @@ const (
 
 	ICC_PROGRESS_CLASS = 0x00000020
 
-	margin         int32 = 10
-	groupHeight    int32 = 45
-	progressHeight int32 = 20
-	btnWidth       int32 = 70
-	btnHeight      int32 = 24
+	IMAGE_ICON     = 1
+	LR_DEFAULTSIZE = 0x00000040
+	LR_SHARED      = 0x00008000
+
+	DEFAULT_CHARSET         = 1
+	CLEARTYPE_QUALITY       = 5
+	FF_SWISS                = 0x20
+	uiFontWeight      int32 = 550
+	uiFontHeight      int32 = -14
+
+	margin         int32 = 6
+	groupHeight    int32 = 50
+	progressHeight int32 = 22
+	btnWidth       int32 = 78
+	btnHeight      int32 = 26
 )
 
 const (
@@ -204,6 +216,8 @@ var (
 	btnSaveHWND      hwnd
 	btnStartHWND     hwnd
 	btnExitHWND      hwnd
+	uiFont           syscall.Handle
+	monoFont         syscall.Handle
 
 	outputMu   sync.Mutex
 	outputText string
@@ -219,25 +233,29 @@ func main() {
 	os.Setenv("GOTELEMETRY", "off")
 	initCommonControls()
 	hInstance := getModuleHandle()
+	iconBig := loadAppIcon(0)
+	iconSmall := loadAppIcon(16)
 	className := toUTF16Ptr("SM3HashWin")
 	wcx := wndClassEx{
 		cbSize:        uint32(unsafe.Sizeof(wndClassEx{})),
 		lpfnWndProc:   syscall.NewCallback(wndProc),
 		hInstance:     hInstance,
 		hCursor:       loadCursor(IDC_ARROW),
+		hIcon:         iconBig,
+		hIconSm:       iconSmall,
 		hbrBackground: syscall.Handle(6),
 		lpszClassName: className,
 	}
 	if atom, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wcx))); atom == 0 {
 		panic(err)
 	}
-	title := toUTF16Ptr("SM3校验工具 (Go)")
+	title := toUTF16Ptr("SM3校验工具 v1.0 (Go)")
 	hw, _, err := procCreateWindowExW.Call(
 		WS_EX_ACCEPTFILES,
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(title)),
 		WS_OVERLAPPEDWINDOW|WS_VISIBLE,
-		100, 100, 560, 440,
+		120, 120, 620, 470,
 		0, 0, uintptr(hInstance), 0,
 	)
 	if hw == 0 {
@@ -261,6 +279,9 @@ func main() {
 func wndProc(h hwnd, message uint32, wParam, lParam uintptr) uintptr {
 	switch message {
 	case WM_CREATE:
+		if mainHWND == 0 {
+			mainHWND = h
+		}
 		createControls(h)
 	case WM_COMMAND:
 		handleCommand(wParam)
@@ -290,13 +311,17 @@ func wndProc(h hwnd, message uint32, wParam, lParam uintptr) uintptr {
 
 func createControls(h hwnd) {
 	font := getDefaultFont()
+	mono := getMonoFont()
+	if mono == 0 {
+		mono = font
+	}
 	outputHWND = createWindow("EDIT", "", WS_CHILD|WS_VISIBLE|WS_BORDER|WS_VSCROLL|ES_MULTILINE|ES_AUTOVSCROLL|ES_READONLY, WS_EX_CLIENTEDGE, 10, 10, 500, 180, h, idEditOut)
-	setFont(outputHWND, font)
+	setFont(outputHWND, mono)
 
-	settingsHWND = createWindow("BUTTON", "设置", WS_CHILD|WS_VISIBLE|BS_GROUPBOX, 0, 10, 195, 500, groupHeight, h, 0)
-	chkSizeHWND = createWindow("BUTTON", "文件大小", WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX, 0, 20, 213, 80, 18, h, idChkSize)
-	chkTimeHWND = createWindow("BUTTON", "计算时间", WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX, 0, 110, 213, 80, 18, h, idChkTime)
-	chkUpperHWND = createWindow("BUTTON", "结果大写", WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX, 0, 200, 213, 80, 18, h, idChkUpper)
+	settingsHWND = createWindow("BUTTON", "显示选项", WS_CHILD|WS_VISIBLE|BS_GROUPBOX, 0, 10, 195, 500, groupHeight, h, 0)
+	chkSizeHWND = createWindow("BUTTON", "文件大小", WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX, 0, 20, 213, 82, 18, h, idChkSize)
+	chkTimeHWND = createWindow("BUTTON", "计算时间", WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX, 0, 112, 213, 82, 18, h, idChkTime)
+	chkUpperHWND = createWindow("BUTTON", "结果大写", WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX, 0, 204, 213, 82, 18, h, idChkUpper)
 	sendMessage(chkSizeHWND, BM_SETCHECK, BST_CHECKED, 0)
 	sendMessage(chkTimeHWND, BM_SETCHECK, BST_CHECKED, 0)
 	sendMessage(chkUpperHWND, BM_SETCHECK, BST_CHECKED, 0)
@@ -304,19 +329,19 @@ func createControls(h hwnd) {
 	setFont(chkTimeHWND, font)
 	setFont(chkUpperHWND, font)
 
-	algoHWND = createWindow("BUTTON", "算法", WS_CHILD|WS_VISIBLE|BS_GROUPBOX, 0, 10, 245, 500, groupHeight, h, 0)
-	sm3LabelHWND = createWindow("STATIC", "SM3", WS_CHILD|WS_VISIBLE, 0, 20, 265, 80, 18, h, 0)
+	algoHWND = createWindow("BUTTON", "哈希算法", WS_CHILD|WS_VISIBLE|BS_GROUPBOX, 0, 10, 245, 500, groupHeight, h, 0)
+	sm3LabelHWND = createWindow("STATIC", "SM3 (国密)", WS_CHILD|WS_VISIBLE, 0, 20, 265, 120, 18, h, 0)
 	setFont(sm3LabelHWND, font)
 
-	progressTextHWND = createWindow("STATIC", "进度:", WS_CHILD|WS_VISIBLE, 0, 10, 295, 40, 18, h, idProgLabel)
+	progressTextHWND = createWindow("STATIC", "进度", WS_CHILD|WS_VISIBLE, 0, 10, 295, 40, 18, h, idProgLabel)
 	setFont(progressTextHWND, font)
-	progressHWND = createWindow("msctls_progress32", "", WS_CHILD|WS_VISIBLE, WS_EX_CLIENTEDGE, 60, 295, 320, 18, h, idProgBar)
+	progressHWND = createWindow("msctls_progress32", "", WS_CHILD|WS_VISIBLE, WS_EX_CLIENTEDGE, 64, 295, 320, 18, h, idProgBar)
 	sendMessage(progressHWND, PBM_SETRANGE, 0, uintptr((100<<16)|0))
 	progressLblHWND = createWindow("STATIC", "0%", WS_CHILD|WS_VISIBLE, 0, 390, 295, 40, 18, h, 0)
 	setFont(progressLblHWND, font)
 
 	btnBrowseHWND = createButton("浏览...", 10, 330, h, idBtnBrowse, font)
-	btnClearHWND = createButton("清除", 90, 330, h, idBtnClear, font)
+	btnClearHWND = createButton("清空", 90, 330, h, idBtnClear, font)
 	btnCopyHWND = createButton("复制", 170, 330, h, idBtnCopy, font)
 	btnSaveHWND = createButton("保存", 250, 330, h, idBtnSave, font)
 	btnStartHWND = createButton("开始", 330, 330, h, idBtnStart, font)
@@ -355,40 +380,73 @@ func layoutControls() {
 	if w <= 0 || h <= 0 {
 		return
 	}
-	y := margin
-	outH := h - (groupHeight*2 + progressHeight + btnHeight + margin*6)
-	if outH < 140 {
-		outH = 140
-	}
-	cw := maxInt32(w-2*margin, 120)
-	moveWindow(outputHWND, margin, y, cw, outH)
-	y += outH + margin
-
-	moveWindow(settingsHWND, margin, y, cw, groupHeight)
-	moveWindow(chkSizeHWND, margin+10, y+18, 80, 20)
-	moveWindow(chkTimeHWND, margin+110, y+18, 80, 20)
-	moveWindow(chkUpperHWND, margin+210, y+18, 80, 20)
-	y += groupHeight + margin
-
-	moveWindow(algoHWND, margin, y, cw, groupHeight)
-	moveWindow(sm3LabelHWND, margin+10, y+18, 80, 20)
-	y += groupHeight + margin
-
-	px := margin + 50
-	pw := w - px - margin - 60
-	if pw < 50 {
-		pw = 50
-	}
-	moveWindow(progressTextHWND, margin, y, 40, progressHeight)
-	moveWindow(progressHWND, px, y, pw, progressHeight)
-	moveWindow(progressLblHWND, px+pw+margin, y, 50, progressHeight)
-	y += progressHeight + margin
-
 	btnY := h - margin - btnHeight
-	spacing := int32(10)
-	if total := 6*btnWidth + 5*spacing; total+margin*2 > w {
-		spacing = maxInt32(4, (w-2*margin-6*btnWidth)/5)
+	progressY := btnY - margin - progressHeight
+	algoY := progressY - margin - groupHeight
+	settingsY := algoY - margin - groupHeight
+
+	outH := settingsY - margin
+	if outH < 80 {
+		shift := 80 - outH
+		settingsY += shift
+		algoY += shift
+		progressY += shift
+		btnY += shift
+		outH = 80
+		if btnY+btnHeight+margin > h {
+			over := btnY + btnHeight + margin - h
+			settingsY -= over
+			algoY -= over
+			progressY -= over
+			btnY -= over
+			if settingsY < margin {
+				settingsY = margin
+			}
+			outH = settingsY - margin
+			if outH < 40 {
+				outH = 40
+			}
+		}
 	}
+
+	cw := maxInt32(w-2*margin, 120)
+	moveWindow(outputHWND, margin, margin, cw, outH)
+
+	moveWindow(settingsHWND, margin, settingsY, cw, groupHeight)
+	moveWindow(chkSizeHWND, margin+10, settingsY+18, 80, 20)
+	moveWindow(chkTimeHWND, margin+110, settingsY+18, 80, 20)
+	moveWindow(chkUpperHWND, margin+210, settingsY+18, 80, 20)
+
+	moveWindow(algoHWND, margin, algoY, cw, groupHeight)
+	moveWindow(sm3LabelHWND, margin+10, algoY+18, 120, 20)
+
+	labelW := int32(42)
+	labelGap := int32(8)
+	percentW := int32(60)
+	px := margin + labelW + labelGap
+	pw := w - 2*margin - labelW - percentW - labelGap*2
+	if pw < 80 {
+		pw = 80
+	}
+	moveWindow(progressTextHWND, margin, progressY, labelW, progressHeight)
+	moveWindow(progressHWND, px, progressY, pw, progressHeight)
+	moveWindow(progressLblHWND, px+pw+labelGap, progressY, percentW, progressHeight)
+
+	spacing := int32(8)
+	leftBlock := margin + 4*btnWidth + 3*spacing
+	exitX := w - margin - btnWidth
+	startX := exitX - spacing - btnWidth
+	if startX <= leftBlock+spacing {
+		spacing = maxInt32(4, (w-2*margin-6*btnWidth)/7)
+		leftBlock = margin + 4*btnWidth + 3*spacing
+		exitX = w - margin - btnWidth
+		startX = exitX - spacing - btnWidth
+		if startX <= leftBlock+spacing {
+			startX = leftBlock + spacing
+			exitX = startX + btnWidth + spacing
+		}
+	}
+
 	x := margin
 	moveWindow(btnBrowseHWND, x, btnY, btnWidth, btnHeight)
 	x += btnWidth + spacing
@@ -397,10 +455,8 @@ func layoutControls() {
 	moveWindow(btnCopyHWND, x, btnY, btnWidth, btnHeight)
 	x += btnWidth + spacing
 	moveWindow(btnSaveHWND, x, btnY, btnWidth, btnHeight)
-	x += btnWidth + spacing
-	moveWindow(btnStartHWND, x, btnY, btnWidth, btnHeight)
-	x += btnWidth + spacing
-	moveWindow(btnExitHWND, x, btnY, btnWidth, btnHeight)
+	moveWindow(btnStartHWND, startX, btnY, btnWidth, btnHeight)
+	moveWindow(btnExitHWND, exitX, btnY, btnWidth, btnHeight)
 }
 
 func moveWindow(h hwnd, x, y, w, ht int32) {
@@ -719,8 +775,48 @@ func setError(msg string)  { errMu.Lock(); errText = msg; errMu.Unlock() }
 func currentError() string { errMu.Lock(); defer errMu.Unlock(); return errText }
 
 func getDefaultFont() syscall.Handle {
-	h, _, _ := procGetStockObject.Call(17)
-	return syscall.Handle(h)
+	if uiFont != 0 {
+		return uiFont
+	}
+	height := int32(uiFontHeight)
+	h, _, _ := procCreateFontW.Call(
+		uintptr(height), // height (negative = char height)
+		0, 0, 0,
+		uintptr(uiFontWeight),
+		0, 0, 0,
+		uintptr(DEFAULT_CHARSET),
+		0, 0,
+		uintptr(CLEARTYPE_QUALITY),
+		uintptr(FF_SWISS),
+		uintptr(unsafe.Pointer(toUTF16Ptr("Segoe UI"))),
+	)
+	if h == 0 {
+		h, _, _ = procGetStockObject.Call(17) // fallback system font
+	}
+	uiFont = syscall.Handle(h)
+	return uiFont
+}
+func getMonoFont() syscall.Handle {
+	if monoFont != 0 {
+		return monoFont
+	}
+	height := int32(uiFontHeight - 1)
+	h, _, _ := procCreateFontW.Call(
+		uintptr(height),
+		0, 0, 0,
+		uintptr(uiFontWeight),
+		0, 0, 0,
+		uintptr(DEFAULT_CHARSET),
+		0, 0,
+		uintptr(CLEARTYPE_QUALITY),
+		uintptr(FF_SWISS),
+		uintptr(unsafe.Pointer(toUTF16Ptr("Consolas"))),
+	)
+	if h == 0 {
+		return 0
+	}
+	monoFont = syscall.Handle(h)
+	return monoFont
 }
 func getModuleHandle() syscall.Handle {
 	h, _, _ := procGetModuleHandleW.Call(0)
@@ -728,6 +824,26 @@ func getModuleHandle() syscall.Handle {
 }
 func loadCursor(id int32) syscall.Handle {
 	h, _, _ := user32.NewProc("LoadCursorW").Call(0, uintptr(id))
+	return syscall.Handle(h)
+}
+func loadAppIcon(size int32) syscall.Handle {
+	inst := getModuleHandle()
+	width := uintptr(size)
+	height := uintptr(size)
+	flags := uintptr(LR_DEFAULTSIZE | LR_SHARED)
+	if size <= 0 {
+		width, height = 0, 0
+	}
+	h, _, _ := procLoadImageW.Call(
+		uintptr(inst),
+		uintptr(1), // resource id from embedres
+		uintptr(IMAGE_ICON),
+		width, height,
+		flags,
+	)
+	if h == 0 {
+		h, _, _ = user32.NewProc("LoadIconW").Call(uintptr(inst), uintptr(1))
+	}
 	return syscall.Handle(h)
 }
 func sendMessage(h hwnd, msg uint32, wParam, lParam uintptr) uintptr {
