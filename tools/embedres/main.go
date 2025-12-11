@@ -1,13 +1,10 @@
 package main
 
-// Small helper to generate app.ico from icon.png and inject icon + version info into SM3Hash.exe.
-// Uses Win32 UpdateResource; no external tools required.
+// Helper to embed an existing app.ico and version/manifest into SM3Hash.exe using Win32 UpdateResource.
 
 import (
 	"bytes"
 	"encoding/binary"
-	"image"
-	"image/png"
 	"log"
 	"os"
 	"path/filepath"
@@ -57,57 +54,46 @@ func align4(b *bytes.Buffer) {
 	}
 }
 
-func resizeNearest(src image.Image, size int) *image.RGBA {
-	dst := image.NewRGBA(image.Rect(0, 0, size, size))
-	srcBounds := src.Bounds()
-	sw := srcBounds.Dx()
-	sh := srcBounds.Dy()
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			sx := srcBounds.Min.X + x*sw/size
-			sy := srcBounds.Min.Y + y*sh/size
-			dst.Set(x, y, src.At(sx, sy))
-		}
-	}
-	return dst
-}
-
-func buildICO(pngs [][]byte, sizes []int) []byte {
-	var buf bytes.Buffer
-	count := len(pngs)
-	// ICONDIR
-	binary.Write(&buf, binary.LittleEndian, uint16(0))
-	binary.Write(&buf, binary.LittleEndian, uint16(1))
-	binary.Write(&buf, binary.LittleEndian, uint16(count))
-	offset := 6 + 16*count
-	for i, data := range pngs {
-		sz := sizes[i]
-		wb := byte(sz)
-		hb := byte(sz)
-		if sz >= 256 {
-			wb, hb = 0, 0
-		}
-		buf.WriteByte(wb)
-		buf.WriteByte(hb)
-		buf.WriteByte(0)                                    // colors
-		buf.WriteByte(0)                                    // reserved
-		binary.Write(&buf, binary.LittleEndian, uint16(1))  // planes
-		binary.Write(&buf, binary.LittleEndian, uint16(32)) // bitcount
-		binary.Write(&buf, binary.LittleEndian, uint32(len(data)))
-		binary.Write(&buf, binary.LittleEndian, uint32(offset))
-		offset += len(data)
-	}
-	for _, data := range pngs {
-		buf.Write(data)
-	}
-	return buf.Bytes()
-}
-
 type iconEntry struct {
 	width, height byte
 	size          int
 	id            uint16
 	data          []byte
+}
+
+func parseICO(path string) ([]iconEntry, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < 6 {
+		return nil, os.ErrInvalid
+	}
+	count := int(binary.LittleEndian.Uint16(raw[4:6]))
+	entries := make([]iconEntry, 0, count)
+	dirOffset := 6
+	for i := 0; i < count; i++ {
+		entryOff := dirOffset + i*16
+		if entryOff+16 > len(raw) {
+			break
+		}
+		w := raw[entryOff]
+		h := raw[entryOff+1]
+		size := int(binary.LittleEndian.Uint32(raw[entryOff+8 : entryOff+12]))
+		offset := int(binary.LittleEndian.Uint32(raw[entryOff+12 : entryOff+16]))
+		if offset+size > len(raw) || size <= 0 {
+			continue
+		}
+		data := raw[offset : offset+size]
+		entries = append(entries, iconEntry{
+			width:  w,
+			height: h,
+			size:   size,
+			id:     uint16(len(entries) + 1),
+			data:   data,
+		})
+	}
+	return entries, nil
 }
 
 func updateResources(exe string, entries []iconEntry, verData []byte) {
@@ -205,27 +191,24 @@ func versionParts(v string) (a, b, c, d uint16) {
 	return val(0), val(1), val(2), val(3)
 }
 
-func buildVersionInfoMinimal(fileVer, productVer string) []byte {
-	ma1, ma2, mi1, mi2 := versionParts(fileVer)
-	pa1, pa2, pi1, pi2 := versionParts(productVer)
+func stringBlock(name, value string) []byte {
+	var buf bytes.Buffer
+	start := buf.Len()
+	binary.Write(&buf, binary.LittleEndian, uint16(0))
+	binary.Write(&buf, binary.LittleEndian, uint16(len(value)*2))
+	binary.Write(&buf, binary.LittleEndian, uint16(1)) // text
+	buf.Write(utf16BytesNoNull(name))
+	binary.Write(&buf, binary.LittleEndian, uint16(0))
+	align4(&buf)
+	buf.Write(utf16BytesNoNull(value))
+	b := buf.Bytes()
+	binary.LittleEndian.PutUint16(b[start:], uint16(len(b)))
+	return b
+}
 
-	stringBlock := func(key, val string) []byte {
-		var b bytes.Buffer
-		start := b.Len()
-		valWords := len(utf16.Encode([]rune(val))) + 1
-		binary.Write(&b, binary.LittleEndian, uint16(0))        // wLength
-		binary.Write(&b, binary.LittleEndian, uint16(valWords)) // wValueLength (words)
-		binary.Write(&b, binary.LittleEndian, uint16(1))        // text
-		b.Write(utf16BytesNoNull(key))
-		binary.Write(&b, binary.LittleEndian, uint16(0)) // null
-		align4(&b)
-		b.Write(utf16BytesNoNull(val))
-		binary.Write(&b, binary.LittleEndian, uint16(0)) // null
-		align4(&b)
-		data := b.Bytes()
-		binary.LittleEndian.PutUint16(data[start:], uint16(len(data)))
-		return data
-	}
+func buildVersionInfoMinimal(fileVer, prodVer string) []byte {
+	ma1, ma2, mi1, mi2 := versionParts(fileVer)
+	pa1, pa2, pi1, pi2 := versionParts(prodVer)
 
 	var st bytes.Buffer
 	stStart := st.Len()
@@ -237,9 +220,9 @@ func buildVersionInfoMinimal(fileVer, productVer string) []byte {
 	align4(&st)
 	pairs := map[string]string{
 		"CompanyName":      "sfjdr",
-		"FileDescription":  "SM3 Hash Tool",
+		"FileDescription":  "SM3Hash",
 		"FileVersion":      fileVer,
-		"ProductVersion":   productVer,
+		"ProductVersion":   prodVer,
 		"InternalName":     "SM3Hash",
 		"OriginalFilename": "SM3Hash.exe",
 		"ProductName":      "SM3Hash",
@@ -369,8 +352,8 @@ func buildManifest(appName, appDesc string) []byte {
     </windowsSettings>
   </application>
 </assembly>`
-	// Null-terminate for SxS parser safety.
-	return append([]byte(xml), 0, 0)
+	// Null-terminate for SxS parser safety (single terminator).
+	return append([]byte(xml), 0)
 }
 
 func updateManifestResource(exe string, manifest []byte) {
@@ -399,45 +382,13 @@ func updateManifestResource(exe string, manifest []byte) {
 }
 
 func main() {
-	iconPath := filepath.Join(".", "icon.png")
+	iconPath := filepath.Join(".", "app.ico")
 	exePath := filepath.Join(".", "SM3Hash.exe")
-	imgFile, err := os.Open(iconPath)
-	check(err, "open icon.png")
-	defer imgFile.Close()
-	img, _, err := image.Decode(imgFile)
-	check(err, "decode icon.png")
-
-	sizes := []int{256, 128, 64, 48, 32, 16}
-	var pngs [][]byte
-	var entries []iconEntry
-	for i, sz := range sizes {
-		resized := resizeNearest(img, sz)
-		var buf bytes.Buffer
-		err := png.Encode(&buf, resized)
-		check(err, "encode png")
-		data := buf.Bytes()
-		pngs = append(pngs, data)
-		wb := byte(sz)
-		hb := byte(sz)
-		if sz >= 256 {
-			wb, hb = 0, 0
-		}
-		entries = append(entries, iconEntry{
-			width:  wb,
-			height: hb,
-			size:   len(data),
-			id:     uint16(i + 1),
-			data:   data,
-		})
-	}
-
-	icoBytes := buildICO(pngs, sizes)
-	err = os.WriteFile("app.ico", icoBytes, 0644)
-	check(err, "write app.ico")
+	entries, err := parseICO(iconPath)
+	check(err, "read app.ico")
 
 	verData := buildVersionInfoMinimal(versionStr, versionStr)
 	updateResources(exePath, entries, verData)
-	updateManifestResource(exePath, buildManifest(appName, appDesc))
 
-	log.Println("Icon, manifest, version", versionStr, "injected into", exePath)
+	log.Println("Icon + version", versionStr, "injected into", exePath)
 }
